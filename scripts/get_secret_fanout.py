@@ -1,12 +1,24 @@
+"""Extract secret signal fanout information from JasperGold analysis logs.
+
+Parses a JasperGold fanout analysis log file, extracts per-design fanout
+blocks (target signal and its transitive fanout cone), and writes the
+results to a JSON file.
+
+Usage:
+    python3 scripts/get_secret_fanout.py <input_log> [output.json]
+"""
 
 import sys, json, re
 
+# Patterns to detect which design is being analyzed.
 DESIGN_PATTERNS = [
     re.compile(r"Get fanout.*\b([\w\-]+)\.sv", re.IGNORECASE),
     re.compile(r"Analyzing Verilog file '.*?/([\w\-]+)\.sv'", re.IGNORECASE),
 ]
 
+
 def detect_design(line, current):
+    """Return the design name if the line matches a design pattern, else current."""
     s = line.strip()
     for pat in DESIGN_PATTERNS:
         m = pat.search(s)
@@ -14,7 +26,12 @@ def detect_design(line, current):
             return m.group(1)
     return current
 
+
 def extract_blocks(text):
+    """Parse fanout blocks delimited by '====....' / '----....' lines.
+
+    Returns a list of (design, target_signal, fanout_signals) tuples.
+    """
     lines = text.splitlines()
     results = []
     in_block = False
@@ -26,10 +43,9 @@ def extract_blocks(text):
     for raw in lines:
         s = raw.rstrip("\n")
 
-        # Update design whenever a matching line appears
         current_design = detect_design(s, current_design)
 
-        # Start of a block section
+        # Start of a fanout block.
         if s.strip() == "=========================" and not in_block:
             in_block = True
             collecting = False
@@ -37,10 +53,9 @@ def extract_blocks(text):
             current_target = None
             continue
 
-        # End of the block section
+        # End of the block — emit results.
         if in_block and s.strip().startswith("-------------------------"):
             if current_signals:
-                # Deduplicate while preserving order
                 seen = set()
                 fanout = []
                 for sig in current_signals:
@@ -55,12 +70,12 @@ def extract_blocks(text):
             continue
 
         if in_block:
-            # capture Target line (appears before the signals header)
+            # Capture the target signal name.
             if s.strip().startswith("Target:"):
                 parts = s.split("Target:", 1)[1].strip().split()
                 current_target = parts[0] if parts else None
 
-            # Start collecting when we hit the first indented signal line
+            # Start collecting once we see indented signal lines.
             if not collecting:
                 if s.startswith((" ", "\t")) and s.strip():
                     collecting = True
@@ -72,6 +87,7 @@ def extract_blocks(text):
                         current_signals.append(token)
 
     return results
+
 
 def main():
     in_path = sys.argv[1] if len(sys.argv) > 1 else "input.txt"
@@ -89,6 +105,7 @@ def main():
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
+
 
 if __name__ == "__main__":
     main()

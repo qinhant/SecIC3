@@ -1,13 +1,25 @@
+"""Expand predicate-based invariants into bit-level invariants.
+
+Reads an IC3 solver log (from ABC/PDR or rIC3), identifies predicate
+variables (shortcut.neq_* and shortcut.neqinit.*), and expands each
+predicate reference into the underlying bit-level comparisons.
+Optionally generates symmetric (copy1 <-> copy2) invariant clauses.
+
+Usage:
+    python3 scripts/expand_inv.py --log LOG --map MAP --output OUT [--symmetry]
+"""
+
 import argparse
 import re
-import itertools
+
 
 def analyze_map_file(map_file_path):
-    """
-    Analyzes the map file to extract:
-    - Latch mappings (e.g., copy1.counter[0])
-    - Predicate variables and their relationships to whole words
-    Returns a dictionary with latch mappings and predicate relationships.
+    """Parse a .map file to extract latch mappings and predicate relationships.
+
+    Returns:
+        latch_map: dict mapping signal_name -> list of bit indices
+        expanded_predicates: dict mapping predicate_name -> list of
+            'signal_name[bit]' strings the predicate covers
     """
     latch_map = {}
     equiv_predicate_map = {}
@@ -28,26 +40,22 @@ def analyze_map_file(map_file_path):
                 bit_index = int(parts[2])
                 signal_name = parts[3]
 
-                # Process latch and invlatch entries
                 if signal_type in {"latch", "invlatch"}:
-                    # Represent as `signal_name[bit_index]`
-                    signal_with_bit = f"{signal_name}[{bit_index}]"
                     latch_map.setdefault(signal_name, []).append(bit_index)
 
-                    # Check for predicate variables
+                    # Classify predicate vs. data signals.
                     if signal_name.startswith("shortcut.neq"):
                         equiv_predicate_map.setdefault(signal_name, set())
                     elif signal_name.startswith("shortcut.neqinit"):
                         eqinit_predicate_map.setdefault(signal_name, set())
                     elif signal_name.startswith(("copy1", "copy2")):
-                        # Find corresponding predicate variable
-                        word_name = signal_name[6: ]
+                        word_name = signal_name[6:]
                         equiv_predicate_key = f"shortcut.neq_{word_name}_copy2"
                         equiv_predicate_map.setdefault(equiv_predicate_key, set()).add(signal_name)
                         eqinit_predicate_key = f"shortcut.neqinit.{signal_name}"
                         eqinit_predicate_map.setdefault(eqinit_predicate_key, set()).add(signal_name)
 
-    # Expand predicate variables to include all associated signals and bits
+    # Expand each predicate to the full list of 'signal[bit]' entries.
     expanded_predicates = {}
     for predicate, signals in equiv_predicate_map.items():
         expanded_predicates[predicate] = []
@@ -56,20 +64,27 @@ def analyze_map_file(map_file_path):
                 for bit in sorted(latch_map[signal]):
                     expanded_predicates[predicate].append(f"{signal}[{bit}]")
     for predicate, signals in eqinit_predicate_map.items():
-         expanded_predicates[predicate] = []
-         for signal in signals:
-             if signal in latch_map:
-                 for bit in sorted(latch_map[signal]):
-                     expanded_predicates[predicate].append(f"{signal}[{bit}]")
-
-    # print(expanded_predicates)
+        expanded_predicates[predicate] = []
+        for signal in signals:
+            if signal in latch_map:
+                for bit in sorted(latch_map[signal]):
+                    expanded_predicates[predicate].append(f"{signal}[{bit}]")
 
     return latch_map, expanded_predicates
 
+
 def expand_inv(latch_map, predicate_map, log_path, output_path, symmetry):
+    """Read invariant clauses from a solver log and expand predicate variables.
+
+    Each predicate variable reference (e.g. shortcut.neq_X_copy2[0]) is
+    replaced by the corresponding bit-level equality/inequality literals,
+    producing purely bit-level invariant clauses.
+    """
     with open(log_path, "r") as file_r:
         invariants = []
         final_invariants = []
+
+        # Parse invariant clauses from the solver log.
         for line in file_r:
             if log_path.find("pdr_") >= 0:
                 if line.find("Invariant Clauses") >= 0:
@@ -89,23 +104,28 @@ def expand_inv(latch_map, predicate_map, log_path, output_path, symmetry):
                     line = line[1:-1]
                     line = "!(" + line + ")"
                     invariants.append(line)
-        while len(invariants) > 0:
-            # Pop one invariant from the queue
-            inv = invariants[0]
-            invariants = invariants[1: ]
-            if inv.find('!assume_1_violate') < 0:
-                        inv = inv.replace('(', '(!assume_1_violate[0] && ')
 
+        # Iteratively expand predicate references into bit-level literals.
+        while len(invariants) > 0:
+            inv = invariants.pop(0)
+
+            # Ensure the assume-violation guard is present.
+            if inv.find('!assume_1_violate') < 0:
+                inv = inv.replace('(', '(!assume_1_violate[0] && ')
+
+            # Negated predicate variables are not supported.
             error_match = re.search(r'!shortcut\.neq_[^ )]*', inv)
             if error_match:
                 raise ValueError(f"Invalid usage of predicate variable: {error_match.group()}")
-            
-            # if it does not contain predicate variables, add it to the final invariants
+
             match_equiv = re.search(r'shortcut\.neq_[^ )]+', inv)
             match_eqinit = re.search(r'shortcut\.neqinit\.[^ )]+', inv)
+
             if not match_equiv and not match_eqinit:
+                # No predicate references remain — this clause is fully expanded.
                 final_invariants.append(inv)
             elif match_equiv:
+                # Expand equivalence predicate: neq means copies differ on some bit.
                 equiv_pred = match_equiv.group(0)
                 for signal in predicate_map[equiv_pred.replace('[0]', '')]:
                     if not signal.startswith('copy1'):
@@ -115,10 +135,13 @@ def expand_inv(latch_map, predicate_map, log_path, output_path, symmetry):
                     temp_inv = inv.replace(equiv_pred, f"!{signal} && {signal.replace('copy1', 'copy2')}")
                     invariants.append(temp_inv)
             elif match_eqinit:
+                # Expand eq-init predicate into individual signal references.
                 eqinit_pred = match_eqinit.group(0)
                 for signal in predicate_map[eqinit_pred.replace('[0]', '')]:
                     temp_inv = inv.replace(eqinit_pred, f"{signal}")
                     invariants.append(temp_inv)
+
+        # Optionally add symmetric clauses (swap copy1 <-> copy2).
         if symmetry:
             symmetric_invariants = []
             for inv in final_invariants:
@@ -127,9 +150,9 @@ def expand_inv(latch_map, predicate_map, log_path, output_path, symmetry):
                 sym_inv = sym_inv.replace("__TEMPTEMP__", "copy2")
                 symmetric_invariants.append(sym_inv)
             final_invariants += symmetric_invariants
+
         with open(output_path, 'w') as file_w:
             file_w.write('\n'.join(final_invariants))
-
 
 
 if __name__ == "__main__":
@@ -147,25 +170,9 @@ if __name__ == "__main__":
         dest="symmetry",
         action="store_true",
         default=False,
-        help="genearte symmetric clauses in addition to the original clauses"
+        help="generate symmetric clauses in addition to the original clauses",
     )
-
 
     args = parse.parse_args()
     latch_map, predicate_map = analyze_map_file(args.map_path)
-
     expand_inv(latch_map, predicate_map, args.log_path, args.output_path, args.symmetry)
-
-    # Print latch mappings
-    # print("Latch Mappings:")
-    # for signal, bits in latch_map.items():
-    #     print(f"  {signal}: {[f'{bit}' for bit in sorted(bits)]}")
-
-    # Print expanded predicate relationships
-    # print("\nExpanded Predicate Relationships:")
-    # for predicate, signals in equiv_predicate_map.items():
-    #     print(f"  {predicate} -> {', '.join(signals)}")
-
-
-
-

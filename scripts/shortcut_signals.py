@@ -1,3 +1,14 @@
+"""Inject shortcut signals and equivalence/eq-init predicates into a two-copy
+miter Verilog design to assist IC3-based formal verification.
+
+The script rewrites a Verilog netlist by:
+  1. Parsing register and wire declarations from the miter.
+  2. Creating shortcut (inequality) signals that track whether corresponding
+     registers in the two copies differ.
+  3. Optionally generating equivalence predicates or eq-init predicates that
+     are wired into the design as additional outputs or assumptions.
+"""
+
 import itertools
 import re
 import textwrap
@@ -75,8 +86,8 @@ def add_eqinit_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
         lines = iter(fin)
 
         neqinit_regs: dict[RegId, RegCopy] = {}
-        # copy_regs: dict[RegId, list[RegCopy]] = defaultdict(list)
 
+        # --- Parse module header ---
         module_started = False
         for l in lines:
 
@@ -92,7 +103,7 @@ def add_eqinit_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
             if module_started and ";" in l:
                 break
 
-        # track registers and wires when options on
+        # --- Collect declarations and identify multi-bit registers ---
         decls = []
         for l in lines:
             if skipline.match(l):
@@ -108,10 +119,9 @@ def add_eqinit_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
                     temp_name = reg.full_name.replace('\\', '')
                     neqinit_regs[reg.full_name] = f"{cfg.shortcut_prefix}neqinit.{temp_name}"
 
-            # fout.write(l)
             decls.append(l)
 
-        # create shortcuts
+        # --- Create shortcut declarations and wire/reg assignments ---
         neq_registers: dict[str, str] = {}  # copy name -> neq register
         shortcuts: dict[str, str] = {}  # copy name -> shortcut
         shortcut_decls = []
@@ -129,14 +139,14 @@ def add_eqinit_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
                 signal_wire = signal
                 neq_registers[id] = signal
                 shortcut_decls.append(f"  reg {signal} = 0 ;\n")
-                
+
         if cfg.prepend_shortcut_regs:
             decls = shortcut_decls + decls + shortcut_assigns
         else:
             decls = decls + shortcut_decls + shortcut_assigns
         fout.write("".join(decls))
 
-        # track assignments for setting inequality signals
+        # --- Process assignments and substitute shortcut signals ---
         reg_assigns: dict[str, str] = {}
         dummy_o_exists = False
         for l in lines:
@@ -155,7 +165,6 @@ def add_eqinit_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
                     updated = rhs.replace(f" {copy} ", f" {shortcut} ")
                     if rhs != updated:
                         rhs = updated
-                        # print(f"replaced {copy} => {shortcut} in {rhs}")
                 if "<=" in lhs:  # var is a register
                     assert (
                         var not in reg_assigns
@@ -164,13 +173,12 @@ def add_eqinit_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
                     l = f"{lhs} {rhs} ;{comments}"
             fout.write(l)
 
-        # set inequality registers and collect semantic information
+        # --- Set inequality registers and collect semantic information ---
         sematics = []
         for id, r in neqinit_regs.items():
-            # print(id, r)
             orig_assign = reg_assigns[id]
             neq_signal = neq_registers[id]
-            
+
             if not cfg.wire_only:
                 fout.write(
                     textwrap.indent(
@@ -233,6 +241,7 @@ def add_equiv_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
         orig_regs: dict[RegId, RegCopy] = {}
         copy_regs: dict[RegId, list[RegCopy]] = defaultdict(list)
 
+        # --- Parse module header ---
         module_started = False
         for l in lines:
 
@@ -248,7 +257,7 @@ def add_equiv_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
             if module_started and ";" in l:
                 break
 
-        # track registers and wires when options on
+        # --- Collect declarations and classify registers by copy ---
         decls = []
         for l in lines:
             if skipline.match(l):
@@ -259,21 +268,17 @@ def add_equiv_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
                 lines = itertools.chain([l], lines)
                 break
 
-            # if decl_reg.match(l):
-            #     print(l, cfg.parse_sct_reg(l))
             if decl_reg.match(l) and (reg := cfg.parse_sct_reg(l)):
                 if cfg.fanout_file and reg.id not in secret_fanout:
-                    # print(reg.id)
                     continue
                 if reg.copy_id == cfg.prefix1:
                     orig_regs[reg.id] = reg
                 else:
                     copy_regs[reg.id].append(reg)
 
-            # fout.write(l)
             decls.append(l)
 
-        # create shortcuts
+        # --- Create shortcut signals and inequality registers ---
         neq_registers: dict[str, str] = {}  # copy name -> neq register
         shortcuts: dict[str, str] = {}  # copy name -> shortcut
         shortcut_decls = []
@@ -285,27 +290,15 @@ def add_equiv_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
                 signal = f"{cfg.shortcut_prefix}neq_{id}_{copy_id}"
                 if cfg.wire_only:
                     signal_wire = f"{signal}_wire"
-                    if False:
-                        shortcut_decls.append(f"  wire [{r.n_elements-1}:0] {signal_wire} ;\n")
-                        for i in range(r.n_elements):
-                            shortcut_assigns.append(
-                                f"  assign {signal_wire}[{i}] = !{cfg.assume_violate_sig} && {r.full_name}[{i}] != {rc.full_name}[{i}] ;\n"
-                            )
-                            neq_registers[f"{r.full_name}[{i}]"] = f"{signal_wire}[{i}]"
-                    else:
-                        shortcut_decls.append(f"  wire {signal_wire} ;\n")
-                        shortcut_assigns.append(
-                            f"  assign {signal_wire} = !{cfg.assume_violate_sig} && {r.full_name} != {rc.full_name} ;\n"
-                        )
-                        neq_registers[rc.full_name] = signal_wire
+                    shortcut_decls.append(f"  wire {signal_wire} ;\n")
+                    shortcut_assigns.append(
+                        f"  assign {signal_wire} = !{cfg.assume_violate_sig} && {r.full_name} != {rc.full_name} ;\n"
+                    )
+                    neq_registers[rc.full_name] = signal_wire
                 else:
                     signal_wire = signal
                     neq_registers[rc.full_name] = signal
-                    if False:
-                        # Can store  [{r.n_elements-1}:0] as a variable
-                        shortcut_decls.append(f"  reg [{r.n_elements-1}:0] {signal} = 0 ;\n")
-                    else:
-                        shortcut_decls.append(f"  reg {signal} = 0 ;\n")
+                    shortcut_decls.append(f"  reg {signal} = 0 ;\n")
                 shortcut = f"{cfg.shortcut_prefix}{id}.{copy_id}"
                 shortcutc = f"{cfg.shortcut_prefix}{copy_id}.{id}"
                 shortcuts[r.full_name] = shortcut
@@ -330,7 +323,7 @@ def add_equiv_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
             decls = decls + shortcut_decls + shortcut_assigns
         fout.write("".join(decls))
 
-        # track assignments for setting inequality signals
+        # --- Process assignments and substitute shortcut signals ---
         reg_assigns: dict[str, str] = {}
         for l in lines:
             if l.find("assert(") >= 0:
@@ -338,7 +331,6 @@ def add_equiv_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
                 property = match.group(1)
                 fout.write("output property_o;\n")
                 fout.write(f"assign property_o = ~( {property} ) ;\n")
-                # l = f"// {l}"
             if endmodule.match(l):
                 lines = itertools.chain([l], lines)
                 break
@@ -359,10 +351,9 @@ def add_equiv_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
                     l = f"{lhs} {rhs} ;{comments}"
             fout.write(l)
 
-        # set inequality registers and collect semantic information
+        # --- Set inequality registers and collect semantic information ---
         sematics = []
         for id, r in orig_regs.items():
-            # print(id, r)
             for rc in copy_regs[id]:
                 try:
                     orig_assign = reg_assigns[r.full_name]
@@ -371,7 +362,6 @@ def add_equiv_predicate(filein, fileout, *, cfg: ShortcutSignalsConfig):
                 copy_assign = reg_assigns[rc.full_name]
                 neq_signal = neq_registers[rc.full_name]
                 # FIXME, track each copy's clock
-                # if not cfg.predicate_only:
                 if not cfg.wire_only:
                     fout.write(
                         textwrap.indent(
@@ -439,6 +429,7 @@ def add_implication_signals(filein, fileout, *, cfg: ImplicationSignalsConfig):
         orig_wires: dict[WireId, WireCopy] = {}
         copy_wires: dict[WireId, list[WireCopy]] = defaultdict(list)
 
+        # --- Parse module header ---
         module_started = False
         for l in lines:
             fout.write(l)
@@ -450,7 +441,7 @@ def add_implication_signals(filein, fileout, *, cfg: ImplicationSignalsConfig):
             if module_started and ";" in l:
                 break
 
-        # track wires
+        # --- Collect wire declarations and classify by copy ---
         decls = []
         for l in lines:
             if skipline.match(l):
@@ -470,7 +461,7 @@ def add_implication_signals(filein, fileout, *, cfg: ImplicationSignalsConfig):
             decls.append(l)
         fout.write("".join(decls))
 
-        # create equality signals
+        # --- Create equality signals and build support graph ---
         eq_signals: dict[str, str] = {}  # wire name (orig) -> eq signal
         supports: dict[str, list[str]] = defaultdict(
             list
@@ -493,6 +484,7 @@ def add_implication_signals(filein, fileout, *, cfg: ImplicationSignalsConfig):
                     ), f"not implemented: handle repeated assignment (of {lhs})"
                     supports[lhs] = operands
 
+        # --- Emit equality implication instrumentation ---
         eq_id = 1
         impl_id = 0
         fout.write(f"\n  /* Equality Implication Instrumentation Starts */\n\n")
@@ -555,10 +547,10 @@ def add_implication_signals(filein, fileout, *, cfg: ImplicationSignalsConfig):
 
         fout.write(f"\n  /* Equality Implication Instrumentation Ends */\n\n")
 
+        # --- Wire implication result into the assumption signal ---
         # FIXME considering general assumption name
         # For now, assume it to be assume_1_violate_in
         assump_name = "assume_1_violate_in"
-        # fout.write(f"  always @* if (1'h1) assume(__IMPL{impl_id-1}__) ;\n")
         for l in lines:
             assign_assump = re.compile(
                 rf"(?P<lhs>\s*assign\s+{assump_name}\s*(=))"
@@ -572,6 +564,7 @@ def add_implication_signals(filein, fileout, *, cfg: ImplicationSignalsConfig):
 
 if __name__ == "__main__":
     import argparse
+    import os
     import sys
 
     parse = argparse.ArgumentParser()
@@ -666,7 +659,7 @@ if __name__ == "__main__":
         default=False,
         help="enable eqinit predicate for every register that has more than 1 bit"
     )
-    
+
     parse.add_argument(
         "--fanout_file",
         dest="fanout_file",
@@ -717,8 +710,6 @@ if __name__ == "__main__":
                 n_elems = abs(int(match.group("elems_end")) - int(match.group("elems_start"))) + 1
             else:
                 n_elems = None
-            # print(match.group("fullname"))
-            # print(n_elems)
             return RegCopy(
                 name,
                 copy_id=match.group("copy"),
@@ -773,7 +764,7 @@ if __name__ == "__main__":
             add_equiv_predicate(temp_path, "temp.sv", cfg=cfg)
         else:
             add_equiv_predicate(temp_path, args.output_path, cfg=cfg)
-    
+
     if args.enable_eqinit:
         cfg = ShortcutSignalsConfig(
             parse_sct_reg=parse_sct_reg,
@@ -790,6 +781,4 @@ if __name__ == "__main__":
         add_eqinit_predicate(temp_path, args.output_path, cfg=cfg)
 
     if temp_path == "temp.sv":
-        import os
-
-        os.system(f"rm {temp_path}")
+        os.remove(temp_path)

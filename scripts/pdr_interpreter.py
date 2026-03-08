@@ -1,8 +1,16 @@
+"""Parse ABC PDR solver logs and produce human-readable interpreted output.
+
+Uses a .map file to translate numeric latch and input IDs to their
+corresponding signal names.  Outputs an interpreted log file and,
+optionally, an interpreted counterexample file.
+"""
+
 import sys
 import argparse
 
 
 def pdr_interpret(log_path, map_path, inv_path, output_path, cex_path):
+    # ---- Parse the .map file into latch and input dictionaries ----
     with open(map_path, "r") as file:
         mapping = [line.strip() for line in file.readlines()]
     latch_map = dict()
@@ -24,7 +32,9 @@ def pdr_interpret(log_path, map_path, inv_path, output_path, cex_path):
             signal_name = split[3]
             if input_num not in input_map.keys():
                 input_map[input_num] = signal_name + "[" + bit + "]"
-    if inv_path != None:
+
+    # ---- Interpret the invariant (.pla) file, if provided ----
+    if inv_path is not None:
         with open(inv_path, "r") as file:
             content = file.read()
         latch_list = [
@@ -50,6 +60,7 @@ def pdr_interpret(log_path, map_path, inv_path, output_path, cex_path):
     else:
         log_output = "---------------No Invariant File-------------------- \n"
 
+    # ---- Interpret the PDR log file ----
     log_output += "---------------PDR Log--------------------\n"
     with open(log_path, "r") as file:
         log = [line.strip() for line in file.readlines()]
@@ -98,12 +109,14 @@ def pdr_interpret(log_path, map_path, inv_path, output_path, cex_path):
         else:
             log_output += line + "\n"
 
-    if output_path == None:
+    # ---- Write the interpreted log ----
+    if output_path is None:
         output_path = log_path.replace(".log", "_interpreted.log")
     with open(output_path, "w") as file:
         file.write(log_output)
 
-    if cex_path == None:
+    # ---- Write the interpreted counterexample, if requested ----
+    if cex_path is None:
         return
     cex_output = "---------------Counterexample-------------------- \n"
     try:
@@ -157,13 +170,13 @@ if __name__ == "__main__":
     if not args.map_path.endswith(".map"):
         print("Invalid map file, must be a .map file")
         sys.exit(1)
-    if args.inv_path != None and not args.inv_path.endswith(".pla"):
+    if args.inv_path is not None and not args.inv_path.endswith(".pla"):
         print("Invalid invariant file, must be a .pla file")
         sys.exit(1)
-    if args.output_path != None and not args.output_path.endswith(".log"):
+    if args.output_path is not None and not args.output_path.endswith(".log"):
         print("Invalid output file, must be a .log file")
         sys.exit(1)
-    if args.cex_path != None and not args.cex_path.endswith(".cex"):
+    if args.cex_path is not None and not args.cex_path.endswith(".cex"):
         print("Invalid counterexample file, must be a .cex file")
         sys.exit(1)
 

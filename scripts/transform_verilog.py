@@ -1,3 +1,10 @@
+"""Verilog preprocessing utilities.
+
+Provides functions to flatten Verilog designs, convert Verilog to AIGER format,
+create miter circuits for equivalence checking, and remove $fatal/$fwrite blocks.
+All transformations delegate to Yosys via temporary scripts.
+"""
+
 import sys
 import argparse
 import os
@@ -5,10 +12,9 @@ import re
 
 
 def flatten_verilog(input_path, output_path, top, no_assumption):
-    # create a temporary yosys script using the input arguments
+    # Create a temporary yosys script using the input arguments
     with open("scripts/flatten_verilog.ys", "r") as file:
         content = file.read()
-        file.close()
     content = content.replace("input_path", input_path)
     content = content.replace("output_path", output_path)
     content = content.replace("top_module", top)
@@ -16,7 +22,7 @@ def flatten_verilog(input_path, output_path, top, no_assumption):
     file.write(content)
     file.close()
 
-    # run yosys with the temporary script and remove the temporary script
+    # Run yosys with the temporary script and remove the temporary script
     if no_assumption:
         flatten_command = f"yosys -D ASSUME_ON=0 -s scripts/flatten_verilog_temp.ys"
     else:
@@ -25,20 +31,19 @@ def flatten_verilog(input_path, output_path, top, no_assumption):
     os.system("rm scripts/flatten_verilog_temp.ys")
     print(flatten_command)
 
+
 def verilog_to_aig(input_path, output_path, top):
-    # create a temporary yosys script using the input arguments
+    # Create a temporary yosys script using the input arguments
     with open("scripts/verilog_to_aig.ys", "r") as file:
         content = file.read()
-        file.close()
     content = content.replace("input_path", input_path)
     content = content.replace("output_path", output_path)
     content = content.replace("top_module", top)
     content = content.replace("map_path", output_path.replace(".aig", ".map"))
     with open("scripts/verilog_to_aig_temp.ys", "w") as file:
         file.write(content)
-        file.close()
 
-    # run yosys with the temporary script and remove the temporary script
+    # Run yosys with the temporary script and remove the temporary script
     os.system("yosys -s scripts/verilog_to_aig_temp.ys")
     os.system("rm scripts/verilog_to_aig_temp.ys")
 
@@ -46,7 +51,6 @@ def verilog_to_aig(input_path, output_path, top):
     map_path = output_path.replace(".aig", ".map")
     with open(map_path, "r") as file:
         content = file.read()
-        file.close()
         content = content.split("\n")
         predicates = set()
         for line in content:
@@ -63,47 +67,48 @@ def verilog_to_aig(input_path, output_path, top):
         id: int
         bit_index: int
         signal_name: str
-        
-        def __init__(self, id : int, bit_index : int, signal_name : str):
+
+        def __init__(self, id: int, bit_index: int, signal_name: str):
             self.id = id
             self.bit_index = bit_index
             self.signal_name = signal_name
-        
+
         def var_name(self):
             return f"{self.signal_name}[{self.bit_index}]"
-        
+
+        @staticmethod
         def parse_line(line):
             sig_type, sig_id, bit_index, sig_name = line.split(" ")
             return Latch(int(sig_id), int(bit_index), sig_name)
-    
+
     with open(map_path, "r") as file:
         latches = [Latch.parse_line(l.strip()) for l in file.readlines() if l.startswith("latch")]
 
-    # print(latches)
-    latch_to_var : dict[int, Latch] = dict()
-    var_to_latch : dict[(str, int), Latch] = dict()
-    latch_symmetry : dict[int, int] = dict()
-    latch_to_equiv_predicate : dict[int, int] = dict()
-    latch_to_eqinit_predicate : dict[int, int] = dict()
-    all_latch : set[int] = set()
-    
+    latch_to_var: dict[int, Latch] = dict()
+    var_to_latch: dict[(str, int), Latch] = dict()
+    latch_symmetry: dict[int, int] = dict()
+    latch_to_equiv_predicate: dict[int, int] = dict()
+    latch_to_eqinit_predicate: dict[int, int] = dict()
+    all_latch: set[int] = set()
+
     for l in latches:
         var_to_latch[(l.signal_name, l.bit_index)] = l
-        # print(l.signal_name, l.bit_index)
         latch_to_var[l.id] = l
         all_latch.add(l.id)
 
+    # Regex patterns for matching copy1/copy2 prefixed signal names
     copy_prefix1 = r"copy1."
     copy_prefix2 = r"copy2."
     copy_pre = re.compile(rf"({re.escape(copy_prefix1)}|{re.escape(copy_prefix2)})")
     is_copy = re.compile(rf"{copy_pre.pattern}(?P<name>.+)")
-    
+
     for l in latches:
-        
+
         match = is_copy.match(l.signal_name)
         if match:
+            # Find the symmetric latch (copy1 <-> copy2)
             symmetric_prefix = (
-                copy_prefix1 if l.signal_name.startswith(copy_prefix2) 
+                copy_prefix1 if l.signal_name.startswith(copy_prefix2)
                 else copy_prefix2
             )
             symmetric_name = symmetric_prefix + match.group("name")
@@ -111,23 +116,16 @@ def verilog_to_aig(input_path, output_path, top):
                 latch_symmetry[l.id] = var_to_latch[(symmetric_name, l.bit_index)].id
             else:
                 latch_symmetry[l.id] = l.id
+
+            # Map latch to its equivalence predicate
             equiv_predicate_name = f"shortcut.neq_{match.group('name')}_copy2"
-            # if match.group('name') == '_r':
-            #         print(l.signal_name, l.bit_index)
-            #         print(l.id)
-            #         print(var_to_latch[(equiv_predicate_name, 0)].id)
-                   
             try:
                 latch_to_equiv_predicate[l.id] = var_to_latch[(equiv_predicate_name, 0)].id
             except KeyError:
                 if l.id not in latch_to_equiv_predicate.keys():
                     latch_to_equiv_predicate[l.id] = -1
-                    # print(l.signal_name, l.bit_index)
-                    # print(l.id)
-                    # print(equiv_predicate_name)
-                # print(var_to_latch[(equiv_predicate_name, 0)].id)
 
-            
+            # Map latch to its equal-initial-state predicate
             eqinit_predicate_name = f"shortcut.neqinit.{l.signal_name}"
             try:
                 latch_to_eqinit_predicate[l.id] = var_to_latch[(eqinit_predicate_name, 0)].id
@@ -141,6 +139,7 @@ def verilog_to_aig(input_path, output_path, top):
             )
             latch_symmetry[l.id] = var_to_latch[(symmetric_name, l.bit_index)].id
 
+    # Write the relation file: latch, symmetry, predicates, and variable names
     with open(map_path.replace(".map", ".relation"), "w") as file:
         file.write("latch symmetry predicate var_name symmetry_name\n")
         for latch in sorted(list(all_latch)):
@@ -155,10 +154,9 @@ def verilog_to_aig(input_path, output_path, top):
 
 
 def create_miter(input_path, output_path, top):
-    # create a miter circuit, i.e. creating two copies for equivalence checking
+    # Create a miter circuit, i.e. creating two copies for equivalence checking
     with open("scripts/create_miter.ys", "r") as file:
         content = file.read()
-        file.close()
     content = content.replace("input_path", input_path)
     content = content.replace("output_path", output_path)
     content = content.replace("top_module", top)
@@ -168,11 +166,10 @@ def create_miter(input_path, output_path, top):
     file.write(content)
     file.close()
 
-    # run yosys with the temporary script and remove the temporary script
+    # Run yosys with the temporary script and remove the temporary script
     os.system("yosys -s scripts/create_miter_temp.ys")
     os.system("rm scripts/create_miter_temp.ys")
 
-import re
 
 def remove_f_blocks(input_path, output_path):
     """
@@ -199,6 +196,7 @@ def remove_f_blocks(input_path, output_path):
         file.write(content)
 
     print(f"Processed file saved to: {output_path}")
+
 
 if __name__ == "__main__":
 
@@ -242,5 +240,3 @@ if __name__ == "__main__":
         create_miter(args.input_path, args.output_path, args.top)
     elif args.option == "remove_f_blocks":
         remove_f_blocks(args.input_path, args.output_path)
-    elif args.option == "word_split":
-        verilog_word_split(args.input_path)

@@ -1,57 +1,15 @@
-import itertools
+"""Implement smart duplication for IC3 verification state-space reduction.
+
+Given a two-copy miter design and secret fanout information, this script
+replaces copy2 signals that are NOT in the secret's fanout cone with their
+copy1 equivalents.  This collapses redundant state bits and shrinks the
+state space that IC3 must explore.
+"""
+
 import re
-import textwrap
-from collections import defaultdict
-from collections.abc import Callable
-from dataclasses import dataclass
 import json
 
 
-RegId = str
-WireId = str
-CopyId = str
-
-
-@dataclass
-class RegCopy:
-    id: RegId
-    copy_id: CopyId
-    full_name: str
-    width: str = ""
-    n_elements: int | None = None
-
-
-@dataclass
-class WireCopy:
-    id: WireId
-    copy_id: CopyId
-    full_name: str
-    width: str = ""
-
-
-@dataclass
-class ShortcutSignalsConfig:
-    """Settings for shortcut signals."""
-
-    # parse_sct_reg: Callable  # [[str], RegCopy | None]
-    original: CopyId
-    shortcut_prefix: str
-    prepend_shortcut_regs: bool = False
-
-# def extract_regs(expr: str, prefix: str) -> set[str]:
-#     """Extracts all registers from an expression."""
-#     reg_re = re.compile(
-#         rf"(?P<copy>{prefix})(?P<name>[\w\.]+)?"     
-#     )
-#     regs = set()
-
-#     for match in reg_re.finditer(expr):
-#         # Might need to add the copy prefix to the name
-#         regs.add(match.group("name"))
-
-#     return regs
-
-# take in a two-copy version and fanout of secret, delete every variable of copy2 not in fanout_signals
 def smart_duplicate(fanout_signals, miter_file, output_file, prefix1 = r"\copy1.", prefix2 = r"\copy2."):
     commentp = re.compile(r"\(\*.*\*\)")
     comments = re.compile(r"/\*.*\*/")
@@ -121,8 +79,9 @@ if __name__ == "__main__":
         help="file containing fanout signals of the secret",
     )
 
-    prefix1 = parse.parse_args().prefix1
-    prefix2 = parse.parse_args().prefix2
+    args = parse.parse_args()
+    prefix1 = args.prefix1
+    prefix2 = args.prefix2
 
     copy_re = f"(?P<copy>({prefix1}|{prefix2}))"
     width_re = r"\s*(?P<width>(\[\d+:\d+\]|))\s*"
@@ -132,11 +91,11 @@ if __name__ == "__main__":
     reg_re = re.compile(rf"\s*reg{width_re} {fullname_re}{elems_re}")
     wire_re = re.compile(rf"\s*(wire|input|output|inout){width_re} {fullname_re}")
 
-    fanout_file = parse.parse_args().fanout_signals_file
+    fanout_file = args.fanout_signals_file
     with open(fanout_file, "r") as f:
         data = json.load(f)
 
-    design = parse.parse_args().design
+    design = args.design
     filtered = [b for b in data if b.get("design") == design]
     secret_fanout = []
     for block in filtered:
@@ -147,37 +106,5 @@ if __name__ == "__main__":
         if secret_fanout[i].find('[') >= 0:
             secret_fanout[i] = secret_fanout[i][: secret_fanout[i].find('[')]
         secret_fanout[i] = secret_fanout[i].replace(prefix1, "").replace(prefix2, "")
-        
-    # print(f"Secret fanout signals: {secret_fanout}")
-    smart_duplicate(secret_fanout, parse.parse_args().input_file, parse.parse_args().output_file, prefix1, prefix2)
 
-
-    # def parse_sct_reg(reg: str):  # -> RegCopy | None:
-    #     match = reg_re.match(reg)
-    #     if match is None:
-    #         return None
-    #     try:
-    #         name = match.group("name")
-    #         if not sct_regs.fullmatch(name):
-    #             return None
-    #         if (
-    #             match.group("elems_end") is not None
-    #             and match.group("elems_start") is not None
-    #         ):
-    #             n_elems = (
-    #                 abs(int(match.group("elems_end")) - int(match.group("elems_start")))
-    #                 + 1
-    #             )
-    #         else:
-    #             n_elems = None
-    #         # print(match.group("fullname"))
-    #         # print(n_elems)
-    #         return RegCopy(
-    #             name,
-    #             copy_id=match.group("copy"),
-    #             width=match.group("width"),
-    #             full_name=match.group("fullname"),
-    #             n_elements=n_elems,
-    #         )
-    #     except KeyError:
-    #         return None
+    smart_duplicate(secret_fanout, args.input_file, args.output_file, prefix1, prefix2)
