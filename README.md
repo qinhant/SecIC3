@@ -21,8 +21,7 @@ SecIC3/
 │   └── design_info/     # Secret fanout metadata (JSON)
 ├── scripts/             # Python & Bash pipeline scripts, Yosys synthesis scripts (.ys)
 ├── solvers/             # Verification engines (git submodules)
-│   ├── rIC3/            # Rust IC3 implementation
-│   ├── rIC3_exp/        # Experimental rIC3 with predicate support
+│   ├── rIC3/            # rIC3 fork extended with SecIC3 predicate-replacement support
 │   └── abc_exp/         # Modified ABC solver
 ├── yosys_output/        # Intermediate synthesis outputs (.aig, .map)
 ├── abc_output/          # Solver output files (.cex, .pla)
@@ -56,9 +55,14 @@ SecIC3/
 
 Build the Docker image:
 ```bash
-docker build -t "shortcutlogic" docker/
+docker build -t "secic3" docker/
 ```
-For VSCode devcontainer support, the image must be named `shortcutlogic`.
+For VSCode devcontainer support, the image must be named `secic3`.
+
+The image only provides the build environment (Yosys, Rust nightly, build
+tools). After building it, open the repo in VSCode and "Reopen in Container",
+or run the container manually with the repo mounted, then run the build steps
+from the **Manual** section below inside the container.
 
 ### Manual
 
@@ -139,7 +143,7 @@ sudo ln -s $(realpath abc) /usr/local/bin/abc_exp
 
 # rIC3 (build from the workspace root)
 cargo build --release
-sudo ln -s $(realpath target/release/rIC3_exp_latest) /usr/local/bin/rIC3_exp_latest
+sudo ln -s $(realpath target/release/rIC3) /usr/local/bin/rIC3_exp_latest
 ```
 
 Verify both are accessible:
