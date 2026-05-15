@@ -1,7 +1,7 @@
 
 # SecIC3: Customizing IC3 for Hardware Security Verification
 
-**Published at [DATE 2026](https://www.date-conference.com)** | [Paper (arXiv)](https://arxiv.org/abs/2601.21353)
+**Published at [DATE 2026](https://www.date-conference.com)** | [Paper (PDF)](https://past.date-conference.com/proceedings-archive/2026/DATA/287.pdf)
 
 Qinhan Tan, Akash Gaonkar, Yu-Wei Fan, Aarti Gupta, and Sharad Malik
 
