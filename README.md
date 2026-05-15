@@ -26,7 +26,8 @@ SecIC3/
 ├── yosys_output/        # Intermediate synthesis outputs (.aig, .map)
 ├── abc_output/          # Solver output files (.cex, .pla)
 ├── docker/              # Dockerfile for reproducible builds
-└── Cargo.toml           # Rust workspace configuration
+├── Cargo.toml           # Rust workspace configuration
+└── rust-toolchain.toml  # Pinned Rust nightly version
 ```
 
 ### Key Scripts
@@ -46,7 +47,7 @@ SecIC3/
 - [Yosys](https://github.com/YosysHQ/yosys) (via [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build))
 - [ABC](https://github.com/berkeley-abc/abc)
 - Python 3.11+
-- Rust (nightly) — for building rIC3 solvers
+- Rust + rustup — the nightly version is pinned via [rust-toolchain.toml](rust-toolchain.toml) and auto-fetched on first build
 - CMake and a C++ build toolchain — for building ABC
 
 ## Setup
@@ -67,17 +68,18 @@ from the **Manual** section below inside the container.
 ### Manual
 
 1. Install Yosys via [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build) and ensure `yosys` is on your `PATH`.
-2. Install Rust nightly: `rustup default nightly`
+2. Install [rustup](https://rustup.rs). The pinned nightly toolchain is fetched automatically on first `cargo` invocation thanks to [rust-toolchain.toml](rust-toolchain.toml) — no `rustup default nightly` needed.
 3. Clone with submodules:
    ```bash
-   git clone --recurse-submodules <repo-url>
+   git clone --recurse-submodules git@github.com:qinhant/SecIC3.git
    ```
+   Submodule URLs use SSH (`git@github.com:...`), so an SSH key with read access to the linked GitHub repos is required.
 4. Build solvers:
    ```bash
-   # Build rIC3
+   # Build rIC3 (binary lands at target/release/rIC3)
    cargo build --release
 
-   # Build ABC
+   # Build ABC (binary lands at solvers/abc_exp/abc)
    cd solvers/abc_exp && make -j$(nproc)
    ```
 
